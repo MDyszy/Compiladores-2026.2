@@ -21,7 +21,6 @@ def abrir_arquivo(caminho):
     linha = 1
     coluna = 1
 
-
 # Avança o caracter para a leitura do arquivo fonte 
 def avancar_caracter():
     global posicao_caracter, linha, coluna
@@ -40,7 +39,6 @@ def avancar_caracter():
 
     return c
 
-
 # Avança sem consumir para reconhecimentos de, por exemplo, OPR e RCB
 def avancar_sem_consumir():
     global posicao_caracter, linha, coluna
@@ -52,23 +50,19 @@ def avancar_sem_consumir():
 
     return c
 
-
 # Reconhecedores de letras 
 def letra(c): # Letras
-    pass
-
+    return "A" <= c <= "Z" or "a" <= c <= "z"
 
 def digito(c): # Números
-    pass
+    return "0" <= c <= "9"
 
 def especial(c): # " ", "\t" e "\n"
-    pass
-
+    return c in (" ", "\t", "\n")
 
 # Um caracter que pode estar DENTRO de um identificador: L, D ou _
 def parte_de_identificador(c):
     return letra(c) or digito(c) or c == "_"
-
 
 # Scanner com a lógica de leitura
 def scanner():
@@ -83,7 +77,9 @@ def scanner():
         c = avancar_sem_consumir()   # olha o caracter de agora, sem consumir
         
         if estado == 0:
-            if c == "":                       # estado 6: fim do arquivo (Problema 1)
+            # o '$' do AFD denota o fim da entrada; aceito os dois, o caracter
+            # e o fim físico do arquivo
+            if c == "" or c == "$":           # estado 6: fim do arquivo (Problema 1)
                 return Token("EOF", "EOF", None)
 
             if especial(c):                   # estado 28: branco, ignora
