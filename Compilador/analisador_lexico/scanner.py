@@ -1,275 +1,207 @@
 from tokens import Token
 import tabela_de_simbolos
 
-fonte = "" # Código mgol
-posicao_caracter = 0 # Índice, dentro de fonte, do próximo caracter a ser lido
-linha = 1 # Linha que está sendo lida
-coluna = 1 # Coluna que está sendo lida
+class Entrada:
+    def __init__(self, texto):
+        self.fonte = texto                
+        self.posicao_caracter = 0         
+        self.linha = 1                    
+        self.coluna = 1                   
 
-# Variáveis para erros no terminal
-linha_comeco_lexema = 1
-coluna_comeco_lexema = 1
+        self.linha_comeco_lexema = 1
+        self.coluna_comeco_lexema = 1
 
-# Lê o arquivo inteiro para a memória e deixa o scanner pronto para começar.
 def abrir_arquivo(caminho):
-    global fonte, posicao_caracter, linha, coluna
+    try:
+        with open(caminho, "r", encoding="utf-8-sig", errors="replace") as arquivo:
+            return Entrada(arquivo.read())
+    except OSError as falha:
+        print(f"Não foi possível abrir o arquivo fonte: {falha}")
+        return None
 
-    # encoding explícito: sem ele o Windows usaria a codificação local
-    with open(caminho, "r", encoding="utf-8") as arquivo:
-        fonte = arquivo.read()
-    posicao_caracter = 0
-    linha = 1
-    coluna = 1
-
-# Avança o caracter para a leitura do arquivo fonte 
-def avancar_caracter():
-    global posicao_caracter, linha, coluna
-
-    if posicao_caracter >= len(fonte): # Fim do arquivo
+def avancar_caracter(entrada):
+    if entrada.posicao_caracter >= len(entrada.fonte):
         return ""
 
-    c = fonte[posicao_caracter]
-    posicao_caracter += 1
+    c = entrada.fonte[entrada.posicao_caracter]
+    entrada.posicao_caracter += 1
 
     if c == "\n":
-        linha += 1
-        coluna = 1
+        entrada.linha += 1
+        entrada.coluna = 1
     else:
-        coluna += 1
+        entrada.coluna += 1
 
     return c
 
-# Avança sem consumir para reconhecimentos de, por exemplo, OPR e RCB
-def avancar_sem_consumir():
-    global posicao_caracter, linha, coluna
-
-    if posicao_caracter >= len(fonte):
+def avancar_sem_consumir(entrada):
+    if entrada.posicao_caracter >= len(entrada.fonte):
         return ""
 
-    c = fonte[posicao_caracter]
+    return entrada.fonte[entrada.posicao_caracter]
 
-    return c
-
-# Reconhecedores de letras 
-def letra(c): # Letras
+def letra(c): 
     return "A" <= c <= "Z" or "a" <= c <= "z"
 
-def digito(c): # Números
+def digito(c): 
     return "0" <= c <= "9"
 
-def especial(c): # " ", "\t" e "\n"
-    return c in (" ", "\t", "\n")
-
-# Um caracter que pode estar DENTRO de um identificador: L, D ou _
 def parte_de_identificador(c):
     return letra(c) or digito(c) or c == "_"
 
-# Scanner com a lógica de leitura
-def scanner():
-    global linha_comeco_lexema, coluna_comeco_lexema
+TRANSICOES = {
+    0:  {"LETRA": 3, "DIGITO": 22, '"': 1, "{": 4,
+         "<": 7, ">": 9, "=": 8,
+         "+": 14, "-": 15, "*": 16, "/": 17,
+         "(": 18, ")": 19, ";": 20, ",": 21,
+         " ": 28, "\t": 29, "\n": 30,
+         "}": 35, "_": 32, ".": 34,
+         ":": 33, "!": 33, "?": 33, "\\": 33, "[": 33, "]": 33, "'": 33},
 
+    1:  {'"': 2, "QUALQUER": 1},              
+    3:  {"LETRA": 3, "DIGITO": 3, "_": 3},      
+    4:  {"}": 5, "QUALQUER": 4},             
+
+    7:  {"=": 11, ">": 12, "-": 13},   
+    9:  {"=": 10},                     
+
+    22: {"DIGITO": 22, ".": 23, "e": 25, "E": 25, "LETRA": 31, "_": 31},
+    23: {"DIGITO": 24},
+    24: {"DIGITO": 24, "e": 25, "E": 25, "LETRA": 31, "_": 31},
+    25: {"DIGITO": 27, "+": 26, "-": 26},
+    26: {"DIGITO": 27},
+    27: {"DIGITO": 27, "LETRA": 31, "_": 31},
+}
+
+FINAIS = {
+    2: "Lit", 3: "id",
+    7: "OPR", 8: "OPR", 9: "OPR", 10: "OPR", 11: "OPR", 12: "OPR",
+    13: "RCB",
+    14: "OPM", 15: "OPM", 16: "OPM", 17: "OPM",
+    18: "AB_P", 19: "FC_P", 20: "PT_V", 21: "Vir",
+    22: "Num", 24: "Num", 27: "Num",
+}
+
+TIPOS = {2: "literal", 22: "inteiro", 24: "real", 27: "real"}
+
+ERROS_DE_ESTADO = {
+    1: "ERRO2",     
+    4: "ERRO4",     
+    23: "ERRO5",    
+    25: "ERRO6",    
+    26: "ERRO6",    
+    31: "ERRO7",    
+    32: "ERRO3",    
+    33: "ERRO8",    
+    34: "ERRO9",    
+    35: "ERRO4",    
+}
+
+ESTADOS_QUE_ENGOLEM = {23, 25, 26, 31, 32}
+
+ESTADOS_SEM_LEXEMA = {4, 5, 28, 29, 30}
+
+ESTADOS_QUE_REINICIAM = {5, 28, 29, 30}
+
+MENSAGENS_DE_ERRO = {
+    "ERRO1": "Caractere inválido na linguagem",
+    "ERRO2": "Constante literal não fechada, verifique as aspas de abertura e de fechamento",
+    "ERRO3": "Identificador em formato inválido, deve começar por letra",
+    "ERRO4": "Comentário mal formado, verifique a abertura { e o fechamento }",
+    "ERRO5": "Número real em formato inválido, depois do ponto é preciso ao menos um dígito (ex.: 5.0)",
+    "ERRO6": "Notação científica em formato inválido, o expoente precisa de dígitos (ex.: 5e3, 2.5e-3, 7E+2)",
+    "ERRO7": "Número colado em identificador, separe os dois",
+    "ERRO8": "Símbolo do alfabeto que não inicia nenhum token",
+    "ERRO9": "Ponto fora de número, todo número começa por dígito (ex.: 0.5)",
+}
+
+def erro(token, entrada):
+    mensagem = MENSAGENS_DE_ERRO.get(token.classe, "Erro léxico desconhecido")
+
+    print(f"{token.classe} - {mensagem}, "
+          f"linha {entrada.linha_comeco_lexema}, "
+          f"coluna {entrada.coluna_comeco_lexema}: {token.lexema}")
+
+def engolir_identificador(entrada, lexema):
+    while parte_de_identificador(avancar_sem_consumir(entrada)):
+        lexema += avancar_caracter(entrada)
+    return lexema
+
+def transicao(estado, c):
+    linha = TRANSICOES.get(estado, {})
+
+    if c in linha:                        
+        return linha[c]
+
+    if letra(c) and "LETRA" in linha:         
+        return linha["LETRA"]
+
+    if digito(c) and "DIGITO" in linha:        
+        return linha["DIGITO"]
+
+    return linha.get("QUALQUER")                 
+
+def scanner(entrada):
     estado = 0
     lexema = ""
-    linha_comeco_lexema = linha
-    coluna_comeco_lexema = coluna
+    entrada.linha_comeco_lexema = entrada.linha
+    entrada.coluna_comeco_lexema = entrada.coluna
 
     while True:
-        c = avancar_sem_consumir()   # olha o caracter de agora, sem consumir
-        
-        if estado == 0:
-            # o '$' do AFD denota o fim da entrada; aceito os dois, o caracter
-            # e o fim físico do arquivo
-            if c == "" or c == "$":           # estado 6: fim do arquivo (Problema 1)
-                return Token("EOF", "EOF", None)
+        c = avancar_sem_consumir(entrada)  
 
-            if especial(c):                   # estado 28: branco, ignora
-                avancar_caracter()
-                linha_comeco_lexema = linha   # o lexema ainda não começou:
-                coluna_comeco_lexema = coluna # tira a foto de novo
-                continue
+        if estado == 0 and c == "":
+            return Token("EOF", "EOF", None)
 
-            if c == "{":                      # vai para o estado 4
-                avancar_caracter()            # a chave não entra no lexema
-                estado = 4
-                continue
+        proximo = None if c == "" else transicao(estado, c)
 
-            if c == '"':                      # vai para o estado 1
-                lexema += avancar_caracter()
-                estado = 1
-                continue
+        if proximo is not None:
+            if proximo in ESTADOS_SEM_LEXEMA:
+                avancar_caracter(entrada)        
+            else:
+                lexema += avancar_caracter(entrada)
 
-            if letra(c):                      # vai para o estado 3
-                lexema += avancar_caracter()
-                estado = 3
-                continue
-
-            if digito(c):                     # vai para o estado 22
-                lexema += avancar_caracter()
-                estado = 22
-                continue
-
-            if c == "<":                      # vai para o estado 7
-                lexema += avancar_caracter()
-                estado = 7
-                continue
-
-            if c == ">":                      # vai para o estado 9
-                lexema += avancar_caracter()
-                estado = 9
-                continue
-
-            if c == "=":                      # estado 8: final, um caracter só
-                lexema += avancar_caracter()
-                return Token("OPR", lexema, None)
-
-            if c in ("+", "-", "*", "/"):     # estados 14 a 17
-                lexema += avancar_caracter()
-                return Token("OPM", lexema, None)
-
-            if c == "(":                      # estado 18
-                lexema += avancar_caracter()
-                return Token("AB_P", lexema, None)
-
-            if c == ")":                      # estado 19
-                lexema += avancar_caracter()
-                return Token("FC_P", lexema, None)
-
-            if c == ";":                      # estado 20
-                lexema += avancar_caracter()
-                return Token("PT_V", lexema, None)
-
-            if c == ",":                      # estado 21
-                lexema += avancar_caracter()
-                return Token("Vir", lexema, None)
-
-            # nenhuma seta sai do estado 0 com esse caracter
-            avancar_caracter()                # consome para não travar
-            return Token("ERRO", "1", None)
-
-        # ---------- estado 1: dentro do literal ----------
-        elif estado == 1:
-            if c == "":                       # acabou o arquivo sem fechar
-                return Token("ERRO", "2", None)
-
-            lexema += avancar_caracter()      # engole qualquer caracter
-
-            if c == '"':                      # estado 2: final
-                return Token("Lit", lexema, "literal")
-            # se não era aspas, continua no estado 1
-
-        # ---------- estado 3: identificador ----------
-        elif estado == 3:
-            if parte_de_identificador(c):
-                lexema += avancar_caracter()
-                continue
-
-            # faca-ate: o AFD de id não forma o hífen, trata-se aqui
-            if (lexema == "faca"
-                    and fonte[posicao_caracter:posicao_caracter + 4] == "-ate"
-                    and not parte_de_identificador(
-                        fonte[posicao_caracter + 4:posicao_caracter + 5])):
-                for _ in range(4):
-                    lexema += avancar_caracter()
-
-            # o identificador acabou: consulta a tabela de símbolos
-            achado = tabela_de_simbolos.busca(lexema)
-            if achado is not None:            # reservada ou id já visto
-                return achado
-
-            novo = Token("id", lexema, None)
-            tabela_de_simbolos.inserir(novo)
-            return novo
-
-        # ---------- estado 4: dentro do comentário ----------
-        elif estado == 4:
-            if c == "":                       # acabou o arquivo sem fechar
-                return Token("ERRO", "3", None)
-
-            avancar_caracter()                # comentário não vira lexema
-
-            if c == "}":                      # estado 5: reconhecido e ignorado
-                estado = 0                    # volta ao início e procura de novo
+            if proximo in ESTADOS_QUE_REINICIAM:   
+                estado = 0
                 lexema = ""
-                linha_comeco_lexema = linha
-                coluna_comeco_lexema = coluna
-            # se não era }, continua no estado 4
+                entrada.linha_comeco_lexema = entrada.linha
+                entrada.coluna_comeco_lexema = entrada.coluna
+            else:
+                estado = proximo
+            continue
 
-        # ---------- estado 7: já leu '<' ----------
-        elif estado == 7:
-            if c == "=":                      # estado 11
-                lexema += avancar_caracter()
-                return Token("OPR", lexema, None)
-            if c == ">":                      # estado 12
-                lexema += avancar_caracter()
-                return Token("OPR", lexema, None)
-            if c == "-":                      # estado 13
-                lexema += avancar_caracter()
-                return Token("RCB", lexema, None)
-            return Token("OPR", lexema, None) # o 7 também é final: '<' sozinho
+        if estado in FINAIS:
+            classe = FINAIS[estado]
 
-        # ---------- estado 9: já leu '>' ----------
-        elif estado == 9:
-            if c == "=":                      # estado 10
-                lexema += avancar_caracter()
-            return Token("OPR", lexema, None)
+            if classe == "id":
+                proximos = entrada.fonte[entrada.posicao_caracter:
+                                         entrada.posicao_caracter + 4]
+                depois = entrada.fonte[entrada.posicao_caracter + 4:
+                                       entrada.posicao_caracter + 5]
+                if (lexema == "faca"
+                        and proximos == "-ate"
+                        and not parte_de_identificador(depois)):
+                    for _ in range(4):
+                        lexema += avancar_caracter(entrada)
 
-        # ---------- estado 22: parte inteira do número ----------
-        elif estado == 22:
-            if digito(c):
-                lexema += avancar_caracter()
-                continue
-            if c == ".":
-                lexema += avancar_caracter()
-                estado = 23
-                continue
-            if c in ("e", "E"):
-                lexema += avancar_caracter()
-                estado = 25
-                continue
-            return Token("Num", lexema, "inteiro")   # 22 é final
+                achado = tabela_de_simbolos.busca(lexema)
+                if achado is not None:      
+                    return achado
 
-        # ---------- estado 23: leu o ponto, precisa de dígito ----------
-        elif estado == 23:
-            if digito(c):
-                lexema += avancar_caracter()
-                estado = 24
-                continue
-            return Token("ERRO", "4", None)          # 23 NÃO é final
+                novo = Token("id", lexema, None)
+                tabela_de_simbolos.inserir(novo)
+                return novo
 
-        # ---------- estado 24: parte decimal ----------
-        elif estado == 24:
-            if digito(c):
-                lexema += avancar_caracter()
-                continue
-            if c in ("e", "E"):
-                lexema += avancar_caracter()
-                estado = 25
-                continue
-            return Token("Num", lexema, "real")      # 24 é final
+            return Token(classe, lexema, TIPOS.get(estado))
 
-        # ---------- estado 25: leu o 'e' do expoente ----------
-        elif estado == 25:
-            if c in ("+", "-"):
-                lexema += avancar_caracter()
-                estado = 26
-                continue
-            if digito(c):
-                lexema += avancar_caracter()
-                estado = 27
-                continue
-            return Token("ERRO", "5", None)          # 25 NÃO é final
+        if estado == 0:                     
+            lexema += avancar_caracter(entrada)   
+            return Token("ERRO1", lexema, None)
 
-        # ---------- estado 26: leu o sinal do expoente ----------
-        elif estado == 26:
-            if digito(c):
-                lexema += avancar_caracter()
-                estado = 27
-                continue
-            return Token("ERRO", "5", None)          # 26 NÃO é final
+        if estado in ESTADOS_QUE_ENGOLEM:
+            lexema = engolir_identificador(entrada, lexema)
 
-        # ---------- estado 27: dígitos do expoente ----------
-        elif estado == 27:
-            if digito(c):
-                lexema += avancar_caracter()
-                continue
-            return Token("Num", lexema, "real")      # 27 é final
+        if estado == 4:                     
+            lexema = "{"
+
+        return Token(ERROS_DE_ESTADO[estado], lexema, None)

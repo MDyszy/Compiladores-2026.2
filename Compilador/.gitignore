@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 *.exe
+
+# configuracao local do Claude Code, nao faz parte do trabalho
+.claude/

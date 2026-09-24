@@ -32,4 +32,3 @@ inicio
     escreva "\n";
     escreva A;
 fim
-á 

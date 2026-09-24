@@ -1,0 +1,803 @@
+===========================================================================
+ COMO FUNCIONA O ANALISADOR LEXICO DO MGOL
+ Documento de estudo - explica o programa inteiro, arquivo por arquivo,
+ objeto por objeto e funcao por funcao.
+===========================================================================
+
+SUMARIO
+
+  1. A ideia geral
+  2. Como rodar
+  3. tokens.py .............. a estrutura TOKEN
+  4. tabela_de_simbolos.py .. a tabela de simbolos
+  5. scanner.py (parte 1) ... os dados: a tabela de transicao do AFD
+  6. scanner.py (parte 2) ... as funcoes
+  7. main.py ................ o programa principal
+  8. teste_end_to_end.py .... a bateria de testes
+  9. Um exemplo passo a passo
+ 10. Os nove erros
+ 11. Decisoes de projeto e por que elas foram tomadas
+ 12. Pontos fracos conhecidos
+
+
+===========================================================================
+ 1. A IDEIA GERAL
+===========================================================================
+
+O analisador lexico e a primeira fase de um compilador. Ele le o texto do
+programa fonte e o quebra em TOKENS: as "palavras" da linguagem.
+
+    Entrada (texto):   B <- B + 1;
+    Saida (tokens):    id(B)  RCB(<-)  id(B)  OPM(+)  Num(1)  PT_V(;)
+
+Quem faz esse trabalho e um AUTOMATO FINITO DETERMINISTICO (AFD). Ele
+funciona como um jogo de tabuleiro:
+
+  - voce comeca numa casa (o ESTADO INICIAL, que e o estado 0);
+  - le um caractere e ele diz para qual casa voce anda (a TRANSICAO);
+  - quando nao existe mais para onde ir, o lexema acabou:
+      * se voce parou numa casa de ACEITACAO (estado final), sai um TOKEN;
+      * se parou numa casa que NAO e de aceitacao, sai um ERRO.
+
+O programa tem quatro arquivos, mais um de testes:
+
+    tokens.py ............ define o que e um token
+    tabela_de_simbolos.py  guarda identificadores e palavras reservadas
+    scanner.py ........... o AFD propriamente dito
+    main.py .............. abre o arquivo e pede um token por vez
+    teste_end_to_end.py .. confere o programa inteiro automaticamente
+
+O fluxo e sempre este:
+
+    main.py  --chama-->  scanner(entrada)  --devolve-->  um Token
+       ^                        |
+       |                        +-- consulta a tabela de simbolos
+       +-- repete ate vir o token EOF
+
+
+===========================================================================
+ 2. COMO RODAR
+===========================================================================
+
+No terminal, DENTRO da pasta do projeto (isso importa, porque o caminho do
+fonte e relativo):
+
+    cd c:\Compilador\Compilador\analisador_lexico
+    python main.py
+
+Hoje o programa analisa o FONTE.ALG. Para trocar de arquivo, mude a linha 4
+do main.py:
+
+    CAMINHO_DO_FONTE = "testes/FONTE.ALG"
+
+Para rodar a bateria de testes:
+
+    python teste_end_to_end.py
+
+
+===========================================================================
+ 3. tokens.py - A ESTRUTURA TOKEN
+===========================================================================
+
+Este e o arquivo mais simples. Ele define UMA classe.
+
+--- class Token -----------------------------------------------------------
+
+E a estrutura composta que o enunciado pede no item III.1. Guarda tres
+campos, e nada mais:
+
+    classe ... a classificacao do lexema ("id", "Num", "OPR", "ERRO1"...)
+    lexema ... o texto exato que foi lido ("B", "123", "<-", "@"...)
+    tipo ..... o tipo de dado, quando da para saber, ou None
+
+O campo tipo merece atencao, porque ele tem QUATRO situacoes diferentes:
+
+    Num .................. "inteiro" ou "real", conforme o estado final
+    Lit .................. "literal"
+    palavras reservadas .. a propria palavra! "se" tem tipo "se", por
+                           exigencia do item III.2.c do enunciado
+    todo o resto ......... None, que aparece na tela como "Nulo"
+
+--- Token.__init__(self, classe, lexema, tipo) ----------------------------
+
+O construtor. Guarda os tres valores no objeto. Nada mais acontece aqui.
+
+    novo = Token("Num", "123", "inteiro")
+
+--- Token.__str__(self) ---------------------------------------------------
+
+Metodo especial do Python: define o que aparece quando voce faz
+print(token). Sem ele, o print mostraria algo como
+<tokens.Token object at 0x000001>.
+
+Ele monta a linha no formato da Figura 1 do enunciado:
+
+    Classe: Num, Lexema: 123, Tipo: inteiro
+
+O detalhe importante: quando o tipo e None, o metodo troca por "Nulo",
+porque "None" e palavra do Python e o enunciado escreve "Nulo".
+
+    if self.tipo is not None:
+        tipo = self.tipo
+    else:
+        tipo = "Nulo"
+
+A troca acontece SO NA HORA DE IMPRIMIR. O campo self.tipo continua sendo
+None por dentro. Isso e de proposito: na proxima fase do compilador (o T2)
+o codigo vai precisar testar "esse tipo ainda nao foi definido?", e comparar
+com None e mais seguro do que comparar com o texto "Nulo".
+
+
+===========================================================================
+ 4. tabela_de_simbolos.py - A TABELA DE SIMBOLOS
+===========================================================================
+
+Guarda EXCLUSIVAMENTE duas coisas, como manda o item III.2: as palavras
+reservadas da linguagem e os identificadores que aparecerem no programa.
+
+Tokens de erro NAO entram aqui. Se voce escrever "_total" ou "123abc", eles
+viram erro e nao aparecem no despejo da tabela.
+
+--- tabela_de_simbolos (a lista) ------------------------------------------
+
+Uma lista com as 14 palavras reservadas da Tabela 2 do enunciado:
+
+    inicio, varinicio, varfim, escreva, leia, se, entao, fimse,
+    faca-ate, fimfaca, fim, inteiro, literal, real
+
+--- tabela (o dicionario) -------------------------------------------------
+
+O armazenamento de verdade. E um dicionario (hash) do Python, o que o
+enunciado permite explicitamente ("podendo ser utilizadas as estruturas
+disponibilizadas em bibliotecas da linguagem").
+
+    chave  = o lexema (o texto da palavra)
+    valor  = o objeto Token inteiro
+
+Usar dicionario importa por causa da VELOCIDADE: procurar uma palavra e
+imediato, nao percorre a tabela item por item.
+
+--- iniciar() -------------------------------------------------------------
+
+Percorre a lista das 14 reservadas e insere cada uma como Token, com os
+tres campos iguais a propria palavra:
+
+    Token("inicio", "inicio", "inicio")
+
+Isso e o item III.2.c: "os campos classe, lexema e tipo serao todos
+preenchidos com a propria reservada". Tem de ser chamado ANTES de comecar a
+analise, senao "inicio" e "fim" sairiam classificados como identificadores.
+
+--- inserir(token) --------------------------------------------------------
+
+Guarda o token usando o lexema como chave. Nao verifica se ja existe: quem
+verifica e quem chama (o scanner, com busca()). Se a chave ja existisse,
+esta linha substituiria o valor antigo.
+
+--- busca(lexema) ---------------------------------------------------------
+
+Procura pelo lexema e devolve o Token guardado, ou None se nao achar.
+
+CUIDADO com uma confusao comum: busca() nao diz "isto e reservada". Ela
+devolve o token que estiver guardado, seja reservada ou identificador ja
+visto. Quem diz o que a palavra e, e a CLASSE desse token:
+
+    busca("se")   -> Token com classe "se"   (reservada, veio do iniciar)
+    busca("aux")  -> Token com classe "id"   (identificador ja visto antes)
+    busca("novo") -> None                    (nunca apareceu: e id novo)
+
+--- atualiza(token) -------------------------------------------------------
+
+Troca o Token de um lexema que ja esta na tabela. Devolve True se achou e
+False se nao achou.
+
+O analisador lexico NAO usa esta funcao. Ela existe porque o item III.2.b
+exige as tres operacoes (insercao, busca e atualizacao), e sera usada no
+T2: quando a declaracao "B inteiro;" for analisada, o tipo do identificador
+B passa de None para "inteiro".
+
+--- imprimir() ------------------------------------------------------------
+
+Despeja a tabela inteira na tela, no formato "classe, lexema, tipo", que e
+o que a Figura 1 do enunciado mostra:
+
+    Tabela de simbolos
+    inicio, inicio, inicio
+    ...
+    id, A, Nulo
+    id, B, Nulo
+
+E chamada no fim do main.py, depois que todos os tokens foram lidos.
+
+
+===========================================================================
+ 5. scanner.py (PARTE 1) - OS DADOS: A TABELA DE TRANSICAO
+===========================================================================
+
+Aqui esta o coracao do trabalho. O AFD nao esta escrito como codigo: ele
+esta escrito como DADOS, em dicionarios. O enunciado chama isso de "tabela
+de transicao" (item III.3.c.ii).
+
+--- class Entrada ---------------------------------------------------------
+
+Guarda tudo o que o scanner precisa saber sobre a leitura em andamento.
+E o "parametro de entrada" que o enunciado pede no cabecalho
+"token SCANNER(parametros de entrada)".
+
+    fonte .................. o texto inteiro do programa
+    posicao_caracter ....... indice do proximo caractere a ser lido
+    linha .................. linha atual (comeca em 1)
+    coluna ................. coluna atual (comeca em 1)
+    linha_comeco_lexema .... onde o lexema atual comecou
+    coluna_comeco_lexema ... idem, para a mensagem de erro
+
+Por que existe uma classe em vez de variaveis soltas: a POSICAO DA LEITURA
+passou a chegar pelo parametro, em vez de ficar em variaveis globais. Isso
+atende ao cabecalho que o enunciado pede.
+
+Seja honesto na arguicao: isso NAO quer dizer que o programa nao tenha
+nada global. A tabela de simbolos e global, e os dicionarios do AFD sao
+constantes do modulo. O que saiu das globais foi o estado da leitura.
+
+Repare que sao DUAS posicoes diferentes:
+  - linha/coluna     = onde a leitura esta AGORA
+  - linha/coluna do  = onde o lexema que esta sendo montado COMECOU
+    comeco do lexema
+A mensagem de erro usa a segunda. Se usasse a primeira, o erro apontaria
+para o fim do lexema em vez do comeco.
+
+--- TRANSICOES (o dicionario principal) -----------------------------------
+
+E a tabela de transicao. Uma linha por estado; dentro de cada linha, uma
+coluna por simbolo de entrada:
+
+    0:  {"LETRA": 3, "DIGITO": 22, '"': 1, "{": 4, "<": 7, ...}
+
+Le-se: "estando no estado 0, se vier uma letra va para o estado 3; se vier
+um digito va para o 22; se vier aspas va para o 1..."
+
+As colunas podem ser de tres tipos:
+
+    o proprio caractere ... ";", "<", "e", "}"
+    "LETRA" ou "DIGITO" ... qualquer letra, qualquer digito
+    "QUALQUER" ............ qualquer caractere (so o literal e o
+                            comentario usam, porque engolem tudo)
+
+IMPORTANTE: os nomes tem mais de um caractere de proposito. Se a coluna das
+letras se chamasse "L", ela colidiria com a LETRA L do alfabeto; se o
+curinga fosse "*", colidiria com o operador de multiplicacao. Isso chegou a
+acontecer durante o desenvolvimento: o identificador D_1 virava erro,
+porque o D casava com a coluna dos digitos.
+
+Nem todo estado tem linha nesta tabela. Os estados 2, 8, 10 a 21 e 31 a 35
+nao aparecem: eles nao tem NENHUMA seta saindo. Quando o scanner chega num
+deles, a proxima consulta ja devolve "celula vazia" e o lexema termina ali.
+(Nao existe estado 6: a numeracao pula do 5 para o 7 porque o 6 era o EOF
+no desenho original, e o fim de arquivo nao e uma transicao da tabela.)
+
+A REGRA DE OURO DESTA TABELA:
+
+    CELULA VAZIA = FIM DO LEXEMA
+
+Nao existir transicao e o que encerra o token. Se o estado onde parou e
+final, sai TOKEN; se nao e, sai ERRO.
+
+E o FIM DO ARQUIVO conta como celula vazia. E assim que nascem o ERRO2 e o
+ERRO4: o arquivo acaba com a maquina parada no estado 1 (dentro de um
+literal) ou no estado 4 (dentro de um comentario), nao ha transicao
+nenhuma, e sai o erro daquele estado.
+
+--- FINAIS ----------------------------------------------------------------
+
+Diz quais estados produzem token e qual classe cada um produz:
+
+    2: "Lit"     3: "id"      22/24/27: "Num"
+    7,8,9,10,11,12: "OPR"     13: "RCB"
+    14 a 17: "OPM"            18: "AB_P"  19: "FC_P"
+    20: "PT_V"                21: "Vir"
+
+--- TIPOS -----------------------------------------------------------------
+
+Preenche o terceiro campo do token quando o estado final determina o tipo:
+
+    2:  "literal"   (item III.3.c.v)
+    22: "inteiro"   (so digitos)
+    24: "real"      (tem ponto)
+    27: "real"      (tem expoente)
+
+E por isso que "5" sai como inteiro e "5.0" como real: nao e o texto que
+decide, e EM QUAL ESTADO FINAL a maquina parou.
+
+--- ERROS_DE_ESTADO -------------------------------------------------------
+
+O contrario do FINAIS: diz qual erro cada estado de rejeicao produz.
+
+    1  -> ERRO2   literal aberto que chegou ao fim do arquivo
+    4  -> ERRO4   comentario aberto que chegou ao fim do arquivo
+    23 -> ERRO5   ponto sem digito depois
+    25 -> ERRO6   expoente sem digito
+    26 -> ERRO6   sinal de expoente sem digito
+    31 -> ERRO7   numero colado em identificador
+    32 -> ERRO3   identificador comecando por _
+    33 -> ERRO8   simbolo do alfabeto que nao inicia token
+    34 -> ERRO9   ponto fora de numero
+    35 -> ERRO4   fecha comentario sem abrir
+
+Os estados 31 a 35 sao ESTADOS DE ERRO SEM SAIDA: voce entra neles
+consumindo o caractere problematico e deles nao sai seta nenhuma, entao na
+volta seguinte a celula esta vazia e o erro e emitido.
+
+--- Os tres conjuntos -----------------------------------------------------
+
+    ESTADOS_QUE_ENGOLEM = {23, 25, 26, 31, 32}
+
+Estados de erro que, antes de reclamar, engolem o resto do identificador.
+E o que faz "123abc" aparecer inteiro na mensagem. Sem isso, o erro sairia
+com o lexema "123a" e o "bc" viraria um identificador solto logo depois.
+
+    ESTADOS_SEM_LEXEMA = {4, 5, 28, 29, 30}
+
+O que esses estados consomem NAO entra no lexema. Sao o comentario (a
+chave e o texto dentro dela) e os brancos.
+
+    ESTADOS_QUE_REINICIAM = {5, 28, 29, 30}
+
+Sao o comentario fechado (5) e os brancos esp, tab e salt (28, 29, 30).
+No DESENHO do AFD eles sao estados de aceitacao: reconhecem comentario,
+espaco, tabulacao e salto de linha. No CODIGO eles ficam fora do dicionario
+FINAIS porque o scanner nunca para neles: assim que entra, volta ao estado
+0 e continua procurando, sem emitir token nenhum.
+
+E exatamente o "reconhecidos e ignorados" da Tabela 1 do enunciado.
+
+--- MENSAGENS_DE_ERRO -----------------------------------------------------
+
+Dicionario que liga o codigo do erro ao texto que aparece na tela. A chave
+e a classe do token ("ERRO1", "ERRO2", ...), no formato da Figura 1. Se um
+dia aparecer um codigo que nao esteja neste dicionario, a funcao erro()
+mostra "Erro lexico desconhecido" em vez de derrubar o programa.
+
+
+===========================================================================
+ 6. scanner.py (PARTE 2) - AS FUNCOES
+===========================================================================
+
+--- abrir_arquivo(caminho) ------------------------------------------------
+
+Le o arquivo inteiro para a memoria e devolve uma Entrada pronta. Devolve
+None se nao conseguir abrir.
+
+Tres detalhes importantes:
+
+  encoding="utf-8-sig"   le UTF-8 e descarta o BOM, aquele caractere
+                         invisivel que o Bloco de Notas poe no comeco do
+                         arquivo. Sem isso, o BOM viraria um erro numa
+                         posicao que ninguem enxerga.
+
+  errors="replace"       se o arquivo estiver salvo em ANSI e tiver um
+                         acento, o byte invalido vira um caractere de
+                         substituicao em vez de derrubar o programa.
+
+  try / except OSError   caminho errado, pasta no lugar de arquivo ou
+                         permissao negada viram uma mensagem clara em vez
+                         de traceback.
+
+Observacao para a arguicao: ler o arquivo inteiro de uma vez nao contraria
+o item III.3.c.i ("leitura do texto fonte caractere a caractere"). O
+SCANNER consome um caractere por vez; ler tudo antes e so um buffer de
+entrada, e o proprio sistema operacional ja le em blocos.
+
+Uma consequencia util desse modo texto: o Python converte o "\r\n" do
+Windows em "\n" sozinho. Por isso a tabela so precisa da coluna "\n". Se o
+arquivo fosse aberto em modo binario, um "\r" solto cairia em ERRO1.
+
+--- avancar_caracter(entrada) ---------------------------------------------
+
+CONSOME um caractere: devolve o caractere e anda a posicao. Tambem cuida da
+contagem de linha e coluna:
+
+    se o caractere for "\n": linha += 1 e coluna volta para 1
+    senao:                   coluna += 1
+
+No fim do arquivo devolve "" (string vazia).
+
+Detalhe: o tab conta como UMA coluna. No editor ele aparece como 4 ou 8
+espacos, entao a coluna de um erro depois de um tab pode nao bater com o
+que voce ve na tela.
+
+--- avancar_sem_consumir(entrada) -----------------------------------------
+
+Apesar do nome comecar com "avancar", esta funcao NAO avanca nada: ela so
+ESPIA o proximo caractere. Tambem devolve "" no fim do arquivo.
+
+Esta funcao e o que torna o analisador possivel. Para saber se o "<" vai
+virar "<", "<=" ou "<-", e preciso OLHAR o proximo caractere; mas se ele
+nao servir, ele tem de continuar la para o proximo token. Se o scanner
+consumisse para decidir, o caractere seria perdido.
+
+--- letra(c) / digito(c) --------------------------------------------------
+
+Dizem se o caractere e uma letra A-Z/a-z ou um digito 0-9.
+
+Sao faixas ASCII de proposito, e nao isalpha()/isdigit() do Python. As
+funcoes do Python sao Unicode e aceitariam "c cedilha", "a com acento" e
+ate digitos de outros alfabetos - que NAO fazem parte do alfabeto da MGOL
+definido no item 5 da Atividade T1.1.
+
+--- parte_de_identificador(c) ---------------------------------------------
+
+Diz se o caractere pode estar DENTRO de um identificador: letra, digito ou
+"_". O padrao e L(L|D|_)*, ou seja, o primeiro tem de ser letra, mas do
+segundo em diante vale digito e underline.
+
+--- erro(token, entrada) --------------------------------------------------
+
+E a funcao ERROR do item III.4. Recebe o token de erro e imprime a mensagem
+com a posicao e o lexema:
+
+    ERRO1 - Caractere invalido na linguagem, linha 1, coluna 12: @
+
+Repare que ela recebe DOIS parametros. O enunciado diz que o ERROR
+"recebera o TOKEN ERRO", mas a linha e a coluna nao ficam guardadas no
+token - elas estao na Entrada. Por isso a funcao precisa das duas coisas, e
+por isso ela tem de ser chamada logo depois do scanner(), antes que a
+leitura ande.
+
+A mensagem usa hifen comum onde o enunciado mostra travessao. E so
+simplicidade: evita depender de um caractere que nem toda codificacao de
+saida representa.
+
+--- engolir_identificador(entrada, lexema) --------------------------------
+
+Consome letras, digitos e "_" enquanto houver, acrescentando ao lexema.
+Os estados de erro usam isso para mostrar o lexema inteiro.
+
+Note que este laco anda caractere a caractere SEM consultar a tabela. Num
+AFD puro, o estado 31 teria uma seta para ele mesmo com letra, digito e
+"_". Aqui isso foi resolvido no codigo.
+
+--- transicao(estado, c) --------------------------------------------------
+
+Procura na tabela a seta que sai do estado com aquele caractere. Devolve o
+proximo estado, ou None quando a celula esta vazia.
+
+A ordem da busca importa:
+
+    1. o proprio caractere .... no estado 22, o "e" do expoente e achado
+                                aqui, antes de virar "uma letra qualquer"
+    2. "LETRA" ou "DIGITO" .... a classe do caractere
+    3. "QUALQUER" ............. o curinga do literal e do comentario
+
+Se o estado nao tiver linha na tabela, a funcao devolve None direto.
+
+--- scanner(entrada) ------------------------------------------------------
+
+A funcao principal, que devolve UM token por chamada. O laco e generico:
+quase tudo vem da tabela. As poucas excecoes estao listadas na secao 11.
+
+Passo a passo do que ele faz:
+
+  1. Comeca no estado 0, com o lexema vazio, e tira uma "foto" da linha e
+     coluna atuais (e onde o lexema comeca).
+
+  2. Espia o proximo caractere.
+
+  3. Se estiver no estado 0 e a entrada acabou, devolve o token EOF.
+
+  4. Pergunta a tabela: existe seta saindo daqui com esse caractere?
+     (Se o arquivo acabou, a resposta e sempre nao.)
+
+     SE EXISTE:
+        - consome o caractere (acrescentando ao lexema, a menos que o
+          destino esteja em ESTADOS_SEM_LEXEMA);
+        - se o destino reinicia (branco ou comentario fechado), volta ao
+          estado 0, zera o lexema e tira a foto de novo;
+        - senao, anda para o novo estado;
+        - repete.
+
+     SE NAO EXISTE (o lexema acabou):
+        - se o estado atual esta em FINAIS:
+             * se a classe for "id", trata o faca-ate e consulta a tabela
+               de simbolos (explicado abaixo);
+             * senao devolve o Token com a classe e o tipo daquele estado.
+        - se o estado atual e o 0: o caractere nao tem seta nenhuma, ou
+          seja, esta fora do alfabeto. Consome (para nao travar!) e
+          devolve ERRO1.
+        - senao: e um estado de erro. Engole o resto se estiver em
+          ESTADOS_QUE_ENGOLEM; se for o estado 4 (comentario sem
+          fechamento), troca o lexema por "{", ja que o comentario nao
+          acumula texto e a mensagem precisa mostrar alguma coisa; e
+          devolve o erro correspondente.
+
+  O TRATAMENTO DO id, em detalhe:
+
+     a) faca-ate: essa e a unica palavra reservada com hifen, e o padrao
+        L(L|D|_)* nao forma hifen. Entao, quando o identificador termina e
+        o texto acumulado e exatamente "faca", o codigo olha os QUATRO
+        caracteres seguintes. Se forem "-ate" e o que vier depois nao for
+        letra, digito ou "_", ele estende o lexema. Sem a segunda condicao,
+        "faca-atex" viraria a reservada mais um "x" solto.
+
+     b) consulta a tabela de simbolos com busca(). Se achou, devolve O
+        MESMO objeto que esta na tabela (e o que o item III.3.c.vi pede).
+        Se nao achou, cria um Token de classe "id", insere na tabela e
+        devolve.
+
+  A REGRA DO PROGRESSO: repare no "consome para nao travar" do ERRO1. Todo
+  caminho de erro precisa consumir pelo menos um caractere ou estar no fim
+  do arquivo. Se um erro devolvesse sem consumir, a proxima chamada
+  comecaria no mesmo caractere, daria o mesmo erro, e o programa imprimiria
+  erros para sempre.
+
+
+===========================================================================
+ 7. main.py - O PROGRAMA PRINCIPAL
+===========================================================================
+
+--- CAMINHO_DO_FONTE ------------------------------------------------------
+
+Constante com o caminho do arquivo a analisar. E relativo, entao o programa
+precisa ser rodado de dentro da pasta do projeto.
+
+--- principal() -----------------------------------------------------------
+
+Faz exatamente os passos do item III.5:
+
+  1. tabela_de_simbolos.iniciar()
+     Carrega as 14 reservadas ANTES de qualquer analise.
+
+  2. scanner.abrir_arquivo(CAMINHO_DO_FONTE)
+     Abre o fonte. Se devolver None, encerra sem erro feio.
+
+  3. O laco, que so termina quando vier o token EOF:
+       - pede um token ao scanner;
+       - imprime o token (todos, inclusive os de erro);
+       - se a classe comeca com "ERRO", chama a funcao erro() para mostrar
+         a mensagem com linha e coluna;
+       - se a classe for "EOF", sai do laco.
+
+  4. tabela_de_simbolos.imprimir()
+     Despeja a tabela de simbolos no fim, como a Figura 1 mostra.
+
+--- if __name__ == "__main__": --------------------------------------------
+
+Linha idiomatica do Python: faz principal() rodar quando o arquivo e
+executado direto (python main.py), mas NAO quando ele e importado por outro
+arquivo. Sem ela, qualquer import do main dispararia a analise inteira.
+
+
+===========================================================================
+ 8. teste_end_to_end.py - A BATERIA DE TESTES
+===========================================================================
+
+Nao faz parte do que o enunciado exige, mas e o que permite dizer "eu SEI
+que funciona" em vez de "rodei e pareceu certo". Para cada um dos cinco
+fontes de teste, ele confere:
+
+  1. Que a analise TERMINA. Se passar de 1000 tokens, acusa laco infinito
+     em vez de travar junto com o scanner. E o teste automatico da regra do
+     progresso.
+
+  2. Que o CONJUNTO de codigos de erro de cada arquivo e o esperado - nem a
+     menos (deixou de detectar) nem a mais (passou a acusar o que era
+     valido). Atencao ao limite disto: ele compara quais codigos apareceram,
+     nao QUANTOS nem ONDE. Um ERRO1 a mais, num arquivo que ja espera ERRO1,
+     passaria sem ser notado.
+
+  3. Nos fontes sem erro, que colar todos os lexemas de volta reproduz o
+     arquivo original sem brancos e sem comentarios. Isso prova que o
+     scanner nao PERDEU nenhum caractere nem INVENTOU nenhum.
+
+  4. No fim, a COBERTURA: as classes da Tabela 1, as 14 reservadas e os 9
+     codigos de erro precisam ter aparecido em algum arquivo.
+
+Os cinco fontes:
+
+    COMPLETO.ALG ........... exercita todos os tokens, sem nenhum erro
+    FONTE.ALG .............. o programa da Figura 2 do enunciado
+    ERROS.ALG .............. os erros 1, 3, 4, 5, 6, 7, 8 e 9
+    ERRO_LITERAL.ALG ....... so o ERRO2
+    ERRO_COMENTARIO.ALG .... so o ERRO4 sem fechamento
+
+Por que os dois ultimos precisam de arquivo proprio: o ERRO2 e o ERRO4 sem
+fechamento so disparam no FIM DO ARQUIVO. Um literal aberto engole tudo o
+que vier pela frente, entao se ele estivesse no meio do ERROS.ALG comeria
+todos os erros seguintes. E os dois nao cabem juntos, porque cada um
+precisa ser o ultimo.
+
+
+===========================================================================
+ 9. UM EXEMPLO PASSO A PASSO
+===========================================================================
+
+Vamos analisar o trecho:   B<=4
+
+CHAMADA 1
+  estado 0, lexema ""
+  espia "B" -> a tabela diz: estado 0 com LETRA vai para o 3
+  consome "B", lexema "B", estado 3
+  espia "<" -> no estado 3 so ha setas para LETRA, DIGITO e "_"
+               celula vazia! o lexema acabou
+  estado 3 esta em FINAIS, classe "id"
+  lexema nao e "faca", entao nao ha faca-ate
+  busca("B") na tabela -> nao existe
+  cria Token("id", "B", None), insere e devolve
+  SAIDA: Classe: id, Lexema: B, Tipo: Nulo
+
+CHAMADA 2
+  estado 0, lexema ""
+  espia "<" -> estado 0 com "<" vai para o 7
+  consome "<", lexema "<", estado 7
+  espia "=" -> estado 7 com "=" vai para o 11
+  consome "=", lexema "<=", estado 11
+  espia "4" -> o estado 11 nao tem linha na tabela: celula vazia
+  estado 11 esta em FINAIS, classe "OPR"
+  TIPOS nao tem o 11, entao o tipo e None
+  SAIDA: Classe: OPR, Lexema: <=, Tipo: Nulo
+
+  (repare: se o scanner tivesse parado no estado 7, que TAMBEM e final,
+   sairia "<" e depois "=" separados. Ele nao para porque existia seta.
+   Essa e a regra do MAIOR LEXEMA.)
+
+CHAMADA 3
+  estado 0, lexema ""
+  espia "4" -> estado 0 com DIGITO vai para o 22
+  consome "4", lexema "4", estado 22
+  espia "" (fim do arquivo) -> nao ha seta
+  estado 22 esta em FINAIS, classe "Num", TIPOS diz "inteiro"
+  SAIDA: Classe: Num, Lexema: 4, Tipo: inteiro
+
+CHAMADA 4
+  estado 0, espia "" e a entrada acabou
+  SAIDA: Classe: EOF, Lexema: EOF, Tipo: Nulo
+  o laco do main termina
+
+
+===========================================================================
+ 10. OS NOVE ERROS
+===========================================================================
+
+ ERRO1  Caractere invalido na linguagem
+        Caractere que NAO esta no alfabeto do item 5 da T1.1: @ # $ %,
+        letras acentuadas, emoji.
+        Exemplo: B <- 1 @ 2;
+
+ ERRO2  Constante literal nao fechada
+        Uma aspa foi aberta e o arquivo acabou sem a aspa de fechamento.
+        Exemplo: escreva "Digite A:;
+        Obs.: o lexico nao sabe dizer se faltou a de abrir ou a de fechar -
+        os dois casos produzem exatamente o mesmo evento no automato.
+
+ ERRO3  Identificador em formato invalido
+        Comeca por "_", que o padrao L(L|D|_)* nao permite.
+        Exemplo: _total <- 10;
+
+ ERRO4  Comentario mal formado
+        Ou uma chave "}" sem abertura, ou uma "{" que nunca fecha.
+        Exemplo: }        ou        { comentario sem fim
+
+ ERRO5  Numero real em formato invalido
+        Tem ponto mas nao tem digito depois.
+        Exemplo: C <- 5.;
+
+ ERRO6  Notacao cientifica em formato invalido
+        O expoente ficou sem digitos.
+        Exemplo: C <- 5e;   ou   C <- 7E+;
+
+ ERRO7  Numero colado em identificador
+        Uma palavra so, seguida, que nao casa com Num nem com id.
+        Exemplo: B <- 123abc;
+
+ ERRO8  Simbolo do alfabeto que nao inicia token
+        O caractere ESTA no alfabeto do item 5, mas nao comeca token
+        nenhum: : ! ? \ [ ] '
+        Exemplo: B <- 1 ! 2;
+
+ ERRO9  Ponto fora de numero
+        Um ponto solto, que so faria sentido dentro de um numero.
+        Exemplo: C <- .5;   (o erro consome so o ponto; o 5 sai como Num)
+
+A diferenca entre ERRO1 e ERRO8 tem apoio no enunciado: o item 5 da T1.1
+lista o alfabeto da MGOL. O que esta fora dele e ERRO1; o que esta dentro
+mas nao inicia nenhum token e ERRO8.
+
+
+===========================================================================
+ 11. DECISOES DE PROJETO E POR QUE ELAS FORAM TOMADAS
+===========================================================================
+
+REGRA DO MAIOR LEXEMA (maximal munch)
+  O automato NAO para no primeiro estado final: continua enquanto houver
+  transicao. E por isso que "fimse" nao e lido como "fim" + "se", e que
+  "<=" nao vira "<" e "=".
+
+SEM RETROCESSO
+  Quando o caminho morre num estado de rejeicao depois de ter passado por
+  um final (como em "5."), o programa NAO volta atras para emitir o ultimo
+  token valido: ele acusa o lexema inteiro como erro, porque o diagnostico
+  fica melhor. Ferramentas como o flex fazem o retrocesso; a MGOL nao tem
+  nenhum construto que exija isso (diferente do "1..5" de Pascal).
+
+PALAVRAS RESERVADAS FORA DO AFD
+  O automato reconhece o padrao "id"; a distincao entre reservada e
+  identificador e feita DEPOIS, por busca na tabela de simbolos. O item 4
+  da T1.1 autoriza: "inicialmente nao se preocupe com palavras-chave, elas
+  serao tratadas posteriormente na implementacao".
+
+COMENTARIO NAO ANINHA
+  "{ a { b } c }" fecha no primeiro "}". A consequencia pratica: o "c"
+  escapa como identificador e o "}" final vira ERRO4. Isso nao e limitacao
+  do desenho, e limitacao da classe de linguagem: contar niveis de
+  aninhamento exige memoria infinita (uma pilha), e um automato FINITO nao
+  conta. O C se comporta igual com /* */.
+
+BRANCOS TEM ESTADO PROPRIO
+  Espaco, tab e salto de linha tem os estados 28, 29 e 30. Sao
+  RECONHECIDOS (existe seta para eles) mas IGNORADOS (nao viram token),
+  que e exatamente o que a Tabela 1 manda.
+
+O SIMBOLO $
+  Nao esta no alfabeto do item 5 da T1.1, entao e ERRO1 como qualquer outro
+  caractere de fora. O EOF do scanner e o fim FISICO do arquivo, nao um
+  caractere lido. Se no seu desenho do AFD houver um "$" na seta do fim de
+  entrada, ele e apenas a notacao usada no papel para representar o fim da
+  entrada - confira isso antes da arguicao.
+
+O QUE FICA FORA DA TABELA DE TRANSICAO
+  Cinco coisas, e vale saber quais sao:
+    1. o token EOF (fim da entrada);
+    2. o ERRO1 (caractere sem nenhuma seta saindo do estado 0);
+    3. o lexema "{" mostrado no comentario sem fechamento;
+    4. o faca-ate, que precisa de quatro caracteres de lookahead;
+    5. o engolir_identificador, que num AFD puro seria uma seta do estado
+       31 para ele mesmo.
+
+LEXEMAS COLADOS
+  "123abc" e erro (ERRO7) porque e UMA palavra so que nao casa com nenhum
+  padrao - e a Tabela 1 define ERRO como "palavras fora do padrao da
+  linguagem". Ja 'abc"def"' NAO e erro lexico: sao DUAS palavras validas, e
+  a aspa e um delimitador. Reclamar de dois tokens validos encostados seria
+  julgar a sequencia, o que e trabalho do analisador sintatico (T2).
+
+O QUE E ERRO SINTATICO, NAO LEXICO
+  Estes passam pelo analisador lexico sem reclamacao, e esta certo:
+    B << C          todos os tokens sao validos
+    A <- <- B       idem
+    B <- 5 5 5;     idem
+  O que esta errado neles e a ORDEM, e ordem e gramatica.
+
+
+===========================================================================
+ 12. PONTOS FRACOS CONHECIDOS
+===========================================================================
+
+Saber destes pontos vale mais do que ser pego por eles.
+
+1. "2entao" sai como ERRO6 (notacao cientifica) quando deveria ser ERRO7.
+   Motivo: no estado 22 o "e" tem coluna propria e manda para o estado 25
+   do expoente ANTES de qualquer verificacao. Qualquer identificador
+   comecando por "e" logo depois de um numero cai nisso.
+
+2. Um literal pode atravessar quebra de linha. Uma aspa esquecida engole o
+   resto do programa ate achar outra aspa, ou ate o fim do arquivo. Quando
+   isso acontece, a mensagem de erro sai com varias linhas dentro dela.
+
+3. A tabela de simbolos e global. Duas analises seguidas compartilham a
+   mesma tabela (por isso o teste limpa a tabela entre um arquivo e outro).
+
+4. Com a saida redirecionada para arquivo (python main.py > saida.txt), um
+   fonte salvo em ANSI com acento derruba o programa: o caractere de
+   substituicao gerado pelo errors="replace" nao existe na codificacao de
+   saida. No console direto isso nao acontece.
+
+5. O caminho do fonte e fixo no codigo. Para analisar outro arquivo e
+   preciso editar a linha 4 do main.py e rodar de dentro da pasta.
+
+6. Os estados 31 a 35 foram criados para a tabela de transicao e podem nao
+   estar no desenho entregue na T1.1. Se a professora comparar, a resposta
+   e: "completei o AFD com estados de erro explicitos, que o desenho
+   representava como transicoes ausentes".
+
+===========================================================================
+ FIM
+===========================================================================
